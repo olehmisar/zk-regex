@@ -1,6 +1,7 @@
 mod circom;
 mod errors;
 mod halo2;
+mod noir;
 mod regex;
 mod structs;
 mod wasm;
@@ -9,6 +10,7 @@ use circom::gen_circom_template;
 use errors::CompilerError;
 use halo2::gen_halo2_tables;
 use itertools::Itertools;
+use noir::gen_noir_fn;
 use regex::{create_regex_and_dfa_from_str_and_defs, get_regex_and_dfa};
 use std::{fs::File, path::PathBuf};
 use structs::{DecomposedRegexConfig, RegexAndDFA, SubstringDefinitionsJson};
@@ -55,6 +57,7 @@ fn generate_outputs(
     halo2_dir_path: Option<&str>,
     circom_file_path: Option<&str>,
     circom_template_name: Option<&str>,
+    noir_file_path: Option<&str>,
     num_public_parts: usize,
     gen_substrs: bool,
 ) -> Result<(), CompilerError> {
@@ -86,97 +89,11 @@ fn generate_outputs(
         )?;
     }
 
-    println!("{:#?}", regex_and_dfa);
-    gen_noir_lookup(regex_and_dfa);
+    if let Some(noir_file_path) = noir_file_path {
+        gen_noir_fn(regex_and_dfa, &PathBuf::from(noir_file_path))?;
+    }
 
     Ok(())
-}
-
-fn gen_noir_lookup(regex_and_dfa: &RegexAndDFA) {
-    let accept_state_id = {
-        let last_state = regex_and_dfa.dfa.states.last().expect("no last state");
-        assert!(
-            last_state.state_type == "accept",
-            "last state is accept, right??"
-        );
-        last_state.state_id
-    };
-
-    const BYTE_SIZE: u32 = 256; // u8 size
-    let mut lookup_table_body = String::new();
-
-    // curr_state + char_code -> next_state
-    let mut rows: Vec<(usize, u8, usize)> = vec![];
-
-    for state in regex_and_dfa.dfa.states.iter() {
-        if state.state_type == "accept" {
-            assert_eq!(state.transitions.len(), 0, "accept state has transitions");
-        } else {
-            assert!(state.transitions.len() > 0, "no transitions");
-            for (&tran_next_state_id, tran) in &state.transitions {
-                for &char_code in tran {
-                    rows.push((state.state_id, char_code, tran_next_state_id));
-                }
-            }
-        };
-    }
-
-    for (curr_state_id, char_code, next_state_id) in rows {
-        lookup_table_body +=
-            &format!("table[{curr_state_id} * {BYTE_SIZE} + {char_code}] = {next_state_id};\n",);
-    }
-
-    lookup_table_body = indent(&lookup_table_body);
-    let table_size = BYTE_SIZE as usize * regex_and_dfa.dfa.states.len();
-    let lookup_table = format!(
-        r#"
-comptime fn make_lookup_table() -> [Field; {table_size}] {{
-    let mut table = [0; {table_size}];
-{lookup_table_body}
-
-    // experimentally confirmed that storing a transition for each char code for accept state produces less gates than adding an `if` to check if the current state is not "accept"
-    // I might be wrong. I tested for input of length 128 and 1024.
-    for i in 0..{BYTE_SIZE} {{
-        table[{accept_state_id} * {BYTE_SIZE} + i] = {accept_state_id};
-    }}
-    table
-}}
-    "#
-    );
-
-    let fn_body = format!(
-        r#"
-global table = make_lookup_table();
-fn regex_match<let N: u32>(input: [u8; N]) {{
-    // regex: {regex_pattern}
-    let mut s = 0;
-    for i in 0..input.len() {{
-        s = table[s * {BYTE_SIZE} + input[i] as Field];
-    }}
-    assert_eq(s, {accept_state_id}, f"no match: {{s}}");
-}}
-    "#,
-        regex_pattern = regex_and_dfa.regex_pattern,
-    );
-    println!(
-        r#"
-        {lookup_table}
-        {fn_body}
-    "#
-    );
-
-    fn indent(s: &str) -> String {
-        s.split("\n")
-            .map(|s| {
-                if s.trim().is_empty() {
-                    s.to_owned()
-                } else {
-                    format!("{}{}", "    ", s)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
 }
 
 /// Generates outputs from a decomposed regex configuration file.
@@ -197,6 +114,7 @@ pub fn gen_from_decomposed(
     halo2_dir_path: Option<&str>,
     circom_file_path: Option<&str>,
     circom_template_name: Option<&str>,
+    noir_file_path: Option<&str>,
     gen_substrs: Option<bool>,
 ) -> Result<(), CompilerError> {
     let mut decomposed_regex_config: DecomposedRegexConfig =
@@ -216,6 +134,7 @@ pub fn gen_from_decomposed(
         halo2_dir_path,
         circom_file_path,
         circom_template_name,
+        noir_file_path,
         num_public_parts,
         gen_substrs,
     )?;
@@ -243,6 +162,7 @@ pub fn gen_from_raw(
     halo2_dir_path: Option<&str>,
     circom_file_path: Option<&str>,
     template_name: Option<&str>,
+    noir_file_path: Option<&str>,
     gen_substrs: Option<bool>,
 ) -> Result<(), CompilerError> {
     let substrs_defs_json = load_substring_definitions_json(substrs_json_path)?;
@@ -257,6 +177,7 @@ pub fn gen_from_raw(
         halo2_dir_path,
         circom_file_path,
         template_name,
+        noir_file_path,
         num_public_parts,
         gen_substrs,
     )?;
