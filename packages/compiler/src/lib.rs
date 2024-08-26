@@ -87,13 +87,13 @@ fn generate_outputs(
     }
 
     println!("{:#?}", regex_and_dfa);
-    gen_noir(regex_and_dfa);
+    gen_noir_lookup(regex_and_dfa);
 
     Ok(())
 }
 
-fn gen_noir(regex_and_dfa: &RegexAndDFA) {
-    let last_state_id = {
+fn gen_noir_lookup(regex_and_dfa: &RegexAndDFA) {
+    let accept_state_id = {
         let last_state = regex_and_dfa.dfa.states.last().expect("no last state");
         assert!(
             last_state.state_type == "accept",
@@ -101,50 +101,69 @@ fn gen_noir(regex_and_dfa: &RegexAndDFA) {
         );
         last_state.state_id
     };
-    let mut res = String::new();
-    res += "let mut s = 0;\n";
-    res += "for i in 0..input.len() {\n";
 
-    let mut body = "let chr = input[i];\n".to_owned();
-    body += "s = ";
+    const BYTE_SIZE: u32 = 256; // u8 size
+    let mut lookup_table_body = String::new();
+
+    // curr_state + char_code -> next_state
+    let mut rows: Vec<(usize, u8, usize)> = vec![];
+
     for state in regex_and_dfa.dfa.states.iter() {
-        body += &format!("if s == {} {{\n", state.state_id);
-
-        let mut tran_body = String::new();
         if state.state_type == "accept" {
             assert_eq!(state.transitions.len(), 0, "accept state has transitions");
-            tran_body += &format!("{{ {} }}\n", state.state_id);
         } else {
             assert!(state.transitions.len() > 0, "no transitions");
-            for (tran_next_state_id, tran) in &state.transitions {
-                let cond = tran
-                    .iter()
-                    .map(|char_code| format!("(chr == {})", char_code))
-                    .join(" | ");
-                tran_body += &format!("if {} {{\n", cond);
-                tran_body += &indent(&format!("{}\n", tran_next_state_id));
-                tran_body += "} else ";
+            for (&tran_next_state_id, tran) in &state.transitions {
+                for &char_code in tran {
+                    rows.push((state.state_id, char_code, tran_next_state_id));
+                }
             }
-            tran_body += "{ 0 }\n";
         };
-        body += &indent(&tran_body);
-
-        body += "} else ";
     }
-    body += "{ assert(false, \"dfa: invalid state\"); 0 };\n";
-    body += "assert(s != 0, \"No match\");\n";
 
-    res += &indent(&body);
-    res += "}\n";
+    for (curr_state_id, char_code, next_state_id) in rows {
+        lookup_table_body +=
+            &format!("table[{curr_state_id} * {BYTE_SIZE} + {char_code}] = {next_state_id};\n",);
+    }
 
-    res += &format!("assert(s == {}, \"No match\");\n", last_state_id);
+    lookup_table_body = indent(&lookup_table_body);
+    let table_size = BYTE_SIZE as usize * regex_and_dfa.dfa.states.len();
+    let lookup_table = format!(
+        r#"
+comptime fn make_lookup_table() -> [Field; {table_size}] {{
+    let mut table = [0; {table_size}];
+{lookup_table_body}
 
-    res = format!(
-        "fn regex_match<let N: u32>(input: [u8; N]) {{\n{}\n}}",
-        indent(&res)
+    // experimentally confirmed that storing a transition for each char code for accept state produces less gates than adding an `if` to check if the current state is not "accept"
+    // I might be wrong. I tested for input of length 128 and 1024.
+    for i in 0..{BYTE_SIZE} {{
+        table[{accept_state_id} * {BYTE_SIZE} + i] = {accept_state_id};
+    }}
+    table
+}}
+    "#
     );
 
-    println!("{}", res);
+    let fn_body = format!(
+        r#"
+global table = make_lookup_table();
+fn regex_match<let N: u32>(input: [u8; N]) {{
+    // regex: {regex_pattern}
+    let mut s = 0;
+    for i in 0..input.len() {{
+        s = table[s * {BYTE_SIZE} + input[i] as Field];
+    }}
+    assert_eq(s, {accept_state_id}, f"no match: {{s}}");
+}}
+    "#,
+        regex_pattern = regex_and_dfa.regex_pattern,
+    );
+    println!(
+        r#"
+        {lookup_table}
+        {fn_body}
+    "#
+    );
 
     fn indent(s: &str) -> String {
         s.split("\n")
