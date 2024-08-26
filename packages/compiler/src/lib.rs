@@ -86,7 +86,78 @@ fn generate_outputs(
         )?;
     }
 
+    println!("{:#?}", regex_and_dfa);
+    gen_noir(regex_and_dfa);
+
     Ok(())
+}
+
+fn gen_noir(regex_and_dfa: &RegexAndDFA) {
+    let last_state_id = {
+        let last_state = regex_and_dfa.dfa.states.last().expect("no last state");
+        assert!(
+            last_state.state_type == "accept",
+            "last state is accept, right??"
+        );
+        last_state.state_id
+    };
+    let mut res = String::new();
+    res += "let mut s = 0;\n";
+    res += "for i in 0..input.len() {\n";
+
+    let mut body = "let chr = input[i];\n".to_owned();
+    body += "s = ";
+    for state in regex_and_dfa.dfa.states.iter() {
+        body += &format!("if s == {} {{\n", state.state_id);
+
+        let mut tran_body = String::new();
+        if state.state_type == "accept" {
+            assert_eq!(state.transitions.len(), 0, "accept state has transitions");
+            tran_body += &format!("{{ {} }}\n", state.state_id);
+        } else {
+            assert!(state.transitions.len() > 0, "no transitions");
+            for (tran_next_state_id, tran) in &state.transitions {
+                let cond = tran
+                    .iter()
+                    .map(|char_code| format!("(chr == {})", char_code))
+                    .join(" | ");
+                tran_body += &format!("if {} {{\n", cond);
+                tran_body += &indent(&format!("{}\n", tran_next_state_id));
+                tran_body += "} else ";
+            }
+            tran_body += "{ 0 }\n";
+        };
+        body += &indent(&tran_body);
+
+        body += "} else ";
+    }
+    body += "{ assert(false, \"dfa: invalid state\"); 0 };\n";
+    body += "assert(s != 0, \"No match\");\n";
+
+    res += &indent(&body);
+    res += "}\n";
+
+    res += &format!("assert(s == {}, \"No match\");\n", last_state_id);
+
+    res = format!(
+        "fn regex_match<let N: u32>(input: [u8; N]) {{\n{}\n}}",
+        indent(&res)
+    );
+
+    println!("{}", res);
+
+    fn indent(s: &str) -> String {
+        s.split("\n")
+            .map(|s| {
+                if s.trim().is_empty() {
+                    s.to_owned()
+                } else {
+                    format!("{}{}", "    ", s)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 /// Generates outputs from a decomposed regex configuration file.

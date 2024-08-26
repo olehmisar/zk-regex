@@ -60,7 +60,7 @@ enum Commands {
     Decomposed {
         #[arg(short, long)]
         decomposed_regex_path: String,
-        #[arg(short, long)]
+        #[arg(long)]
         halo2_dir_path: Option<String>,
         #[arg(short, long)]
         circom_file_path: Option<String>,
@@ -74,7 +74,7 @@ enum Commands {
         raw_regex: String,
         #[arg(short, long)]
         substrs_json_path: Option<String>,
-        #[arg(short, long)]
+        #[arg(long)]
         halo2_dir_path: Option<String>,
         #[arg(short, long)]
         circom_file_path: Option<String>,
