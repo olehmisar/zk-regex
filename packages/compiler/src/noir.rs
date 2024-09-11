@@ -26,9 +26,12 @@ fn to_noir_fn(regex_and_dfa: &RegexAndDFA) -> String {
     // curr_state + char_code -> next_state
     let mut rows: Vec<(usize, u8, usize)> = vec![];
 
+    let mut accepting_state = 0;
     for state in regex_and_dfa.dfa.states.iter() {
         if state.state_type == "accept" {
             assert_eq!(state.transitions.len(), 0, "accept state has transitions");
+            // save the accepting state (this has to be unique)
+            accepting_state = state.state_id;
         } else {
             assert!(state.transitions.len() > 0, "no transitions");
             for (&tran_next_state_id, tran) in &state.transitions {
@@ -46,20 +49,41 @@ fn to_noir_fn(regex_and_dfa: &RegexAndDFA) -> String {
 
     lookup_table_body = indent(&lookup_table_body);
     let table_size = BYTE_SIZE as usize * regex_and_dfa.dfa.states.len();
+
+    // If the regex ends with `$`, use this invalid state to invalidate
+    // any transitions after `$`
+    let invalid_state = accepting_state + 1;
+    let mut end_anchor_logic = if regex_and_dfa.has_end_anchor {
+        format!(
+          r#"
+for i in 0..{BYTE_SIZE} {{
+    table[{accept_state_id} * {BYTE_SIZE} + i] = {invalid_state};
+}}
+            "#
+        )
+    } else {
+        format!(
+          r#"
+for i in 0..{BYTE_SIZE} {{
+    table[{accept_state_id} * {BYTE_SIZE} + i] = {accept_state_id};
+}}
+            "#
+        )
+    };
+    end_anchor_logic = indent(&end_anchor_logic);
+
+
     let lookup_table = format!(
         r#"
 comptime fn make_lookup_table() -> [Field; {table_size}] {{
     let mut table = [0; {table_size}];
 {lookup_table_body}
-
     // experimentally confirmed that storing a transition for each char code for accept state produces less gates than adding an `if` to check if the current state is not "accept"
     // I might be wrong. I tested for input of length 128 and 1024.
-    for i in 0..{BYTE_SIZE} {{
-        table[{accept_state_id} * {BYTE_SIZE} + i] = {accept_state_id};
-    }}
+    {end_anchor_logic}
     table
 }}
-    "#
+      "#
     );
 
     let fn_body = format!(
