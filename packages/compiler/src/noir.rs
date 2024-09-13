@@ -1,4 +1,4 @@
-use std::{fs::File, io::Write, path::Path};
+use std::{cmp::max, fs::File, io::Write, path::Path};
 
 use crate::structs::RegexAndDFA;
 
@@ -26,12 +26,12 @@ fn to_noir_fn(regex_and_dfa: &RegexAndDFA) -> String {
     // curr_state + char_code -> next_state
     let mut rows: Vec<(usize, u8, usize)> = vec![];
 
-    let mut accepting_state = 0;
+
+    let mut highest_state = 0;
     for state in regex_and_dfa.dfa.states.iter() {
+        highest_state = max(state.state_id, highest_state);
         if state.state_type == "accept" {
             assert_eq!(state.transitions.len(), 0, "accept state has transitions");
-            // save the accepting state (this has to be unique)
-            accepting_state = state.state_id;
         } else {
             assert!(state.transitions.len() > 0, "no transitions");
             for (&tran_next_state_id, tran) in &state.transitions {
@@ -52,7 +52,7 @@ fn to_noir_fn(regex_and_dfa: &RegexAndDFA) -> String {
 
     // If the regex ends with `$`, use this invalid state to invalidate
     // any transitions after `$`
-    let invalid_state = accepting_state + 1;
+    let invalid_state = highest_state + 1;
     let mut end_anchor_logic = if regex_and_dfa.has_end_anchor {
         format!(
           r#"
