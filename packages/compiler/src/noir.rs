@@ -79,7 +79,7 @@ comptime fn make_lookup_table() -> [Field; {table_size}] {{
         .join(" | ");
     let fn_body = format!(
         r#"
-global table = make_lookup_table();
+global table = comptime {{ make_lookup_table() }};
 pub fn regex_match<let N: u32>(input: [u8; N]) {{
     // regex: {regex_pattern}
     let mut s = 0;
