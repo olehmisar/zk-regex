@@ -49,7 +49,12 @@ fn to_noir_fn(regex_and_dfa: &RegexAndDFA) -> String {
             let mut char_codes = all_char_codes.difference(existing_char_codes).collect_vec();
             char_codes.sort(); // to be deterministic
             for &char_code in char_codes {
-                rows.push((state.state_id, char_code, state.state_id));
+                let next_state_id = if regex_and_dfa.has_end_anchor {
+                    0 // reset if we encounter another char after we reach the end anchor
+                } else {
+                    state.state_id // no end anchor? Just stay in the same state
+                };
+                rows.push((state.state_id, char_code, next_state_id));
             }
         }
     }
